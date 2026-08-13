@@ -129,14 +129,24 @@ typedef enum {
     GW_LCD_SET_REFRESH     = 7,  /* a=frequency */
     GW_LCD_GET_PIXEL_POS   = 8,  /* → pixel position */
     GW_LCD_IS_SWAP_PENDING = 9,  /* → non-zero if swap pending */
-    GW_LCD_BACKLIGHT_SET   = 10, /* a=brightness */
+    GW_LCD_BACKLIGHT_SET   = 10, /* a=brightness (raw PWM 0..255) */
+    GW_LCD_BACKLIGHT_GET   = 11, /* → raw brightness */
+    GW_LCD_BACKLIGHT_ON    = 12,
+    GW_LCD_BACKLIGHT_OFF   = 13,
+    /* Discrete settings-backed level (odroid_display_*_backlight). */
+    GW_LCD_BACKLIGHT_LEVEL_GET = 14, /* → odroid_display_backlight_t */
+    GW_LCD_BACKLIGHT_LEVEL_SET = 15, /* a = odroid_display_backlight_t */
 } gw_lcd_op_t;
 
 /* Hardware audio ops for audio_ctl() below. Replaces the former per-call
  * ABI slots (audio_start_playing / get_active / clear_* / get_*_length /
  * start_playing_full_length / stop_playing + odroid_audio_init / mute /
  * sample_rate_get / volume_get) with one entry. Bridge re-exposes the
- * historical names as thin wrappers. */
+ * historical names as thin wrappers.
+ *
+ * PCM_* ops: ISR-fed ring for homebrews (Music / Video). Fill lives in
+ * firmware gw_audio.c so the SAI ISR never calls RAM_EMU code. ATTACH
+ * takes a pointer to gw_audio_pcm_attach_t (audio_ctl keeps a single `a`). */
 typedef enum {
     GW_AUDIO_START           = 0,  /* a = half-buffer sample count */
     GW_AUDIO_START_FULL      = 1,  /* a = full DMA sample count */
@@ -151,7 +161,20 @@ typedef enum {
     GW_AUDIO_SAMPLE_RATE_GET = 10,
     GW_AUDIO_MUTE            = 11, /* a = mute bool */
     GW_AUDIO_VOLUME_GET      = 12,
+    GW_AUDIO_VOLUME_SET      = 13, /* a = level 0..ODROID_AUDIO_VOLUME_MAX */
+    GW_AUDIO_PCM_ATTACH      = 14, /* a = gw_audio_pcm_attach_t* */
+    GW_AUDIO_PCM_ENABLE      = 15, /* a = on */
+    GW_AUDIO_PCM_SET         = 16, /* a = vol_0_255 | (play ? 0x10000 : 0) */
+    GW_AUDIO_PCM_SETPOS      = 17, /* a = played samples */
+    GW_AUDIO_PCM_POS         = 18, /* → played samples */
 } gw_audio_op_t;
+
+typedef struct {
+    int16_t           *ring;
+    int                size;   /* power of two */
+    volatile uint16_t *head;
+    volatile uint16_t *tail;
+} gw_audio_pcm_attach_t;
 
 /* FatFs directory ops for fatfs_dir_ctl(). */
 typedef enum {
@@ -194,11 +217,73 @@ typedef enum {
  * prior JPEG/cover path that left different Mode/offsets cannot poison
  * the next blit (same rule as jshsakura main_snes.c). */
 typedef enum {
-    /* a=src, b=dst, c=(width<<16)|height → 0 ok, nonzero0 HAL failure */
+    /* a=src, b=dst, c=(width<<16)|height → 0 ok, ≠0 HAL failure */
     GW_DMA2D_M2M_RGB565_START = 0,
     /* a=timeout_ms → HAL_StatusTypeDef (HAL_OK=0, HAL_TIMEOUT, …) */
     GW_DMA2D_POLL             = 1,
 } gw_dma2d_op_t;
+
+/* Overlay UI / asset cache / fatal chrome. Replaces former standalone
+ * odroid_overlay_draw_text / cache_file_in_* / draw_error_screen /
+ * common_ingame_overlay slots. Bridge re-exposes historical names. */
+typedef enum {
+    GW_OVERLAY_DIALOG            = 0, /* a = gw_overlay_dialog_t* → choice id */
+    GW_OVERLAY_DRAW_LOGO         = 1, /* a=x, b=y, c=logo_idx, d=color */
+    GW_OVERLAY_DRAW_BATTERY      = 2, /* a=odroid_battery_state_t*, b=x, c=y */
+    GW_OVERLAY_CLOCK             = 3, /* a=x, b=y */
+    GW_OVERLAY_DRAW_TEXT         = 4, /* a=gw_overlay_draw_text_t* → advance */
+    GW_OVERLAY_CACHE_RAM         = 5, /* a=path*, b=dest* → size */
+    GW_OVERLAY_CACHE_FLASH_RELOC = 6, /* a=gw_overlay_cache_flash_t* → ptr */
+    GW_OVERLAY_ERROR_SCREEN      = 7, /* a=main*, b=line1*, c=line2* */
+    GW_OVERLAY_INGAME            = 8, /* common_ingame_overlay() */
+} gw_overlay_op_t;
+
+typedef struct {
+    const char *header;
+    odroid_dialog_choice_t *options;
+    int selected;
+    void_callback_t repaint;
+    odroid_menu_flags_t flags;
+} gw_overlay_dialog_t;
+
+typedef struct {
+    uint16_t x, y, width;
+    uint16_t color, color_bg;
+    const char *text;
+} gw_overlay_draw_text_t;
+
+typedef struct {
+    const char *file_path;
+    uint32_t *file_size_p;
+    bool byte_swap;
+    gw_flash_relocate_cb_t relocate_cb;
+} gw_overlay_cache_flash_t;
+
+/* Unicode glyph draw + active UI language code. */
+typedef enum {
+    GW_I18N_GET_TEXT_WIDTH = 0, /* a=text* → width */
+    GW_I18N_DRAW_TEXT_LINE = 1, /* a=gw_i18n_draw_line_t* → advance */
+    GW_I18N_LANG_CODE      = 2, /* → (uintptr_t)const char* ("en_us", …) */
+} gw_i18n_op_t;
+
+typedef struct {
+    uint16_t x, y, width;
+    uint16_t color, color_bg;
+    char transparent;
+    const char *text;
+} gw_i18n_draw_line_t;
+
+/* libm helpers. COSF/SQRTF return float bits in low 32; POW/LOG10 via ptrs. */
+typedef enum {
+    GW_MATH_COSF  = 0, /* a = float bits → float bits */
+    GW_MATH_SQRTF = 1, /* a = float bits → float bits */
+    GW_MATH_LOG10 = 2, /* a = double* in, b = double* out */
+    GW_MATH_POW   = 3, /* a = gw_math_pow_t* (x,y in; out written) */
+} gw_math_op_t;
+
+typedef struct {
+    double x, y, out;
+} gw_math_pow_t;
 
 typedef struct {
     /* Header — every plugin checks these before using the rest. */
@@ -290,7 +375,7 @@ typedef struct {
     int            (*setjmp)(jmp_buf env);
     void           (*longjmp)(jmp_buf env, int val);  /* noreturn */
     struct lconv  *(*localeconv)(void);
-    double         (*pow)(double x, double y);
+    /* (pow folded into math_ctl — see Music/media append.) */
 
     /* ================================================================
      * libc: assert
@@ -405,10 +490,9 @@ typedef struct {
 
     /* ================================================================
      * retro-go: overlay / SD / settings
-     * (odroid_overlay_cache_file_in_flash composed as relocate(..., NULL).)
+     * (odroid_overlay_draw_text / cache_file_in_* / draw_error_screen /
+     * common_ingame_overlay folded into overlay_ctl.)
      * ================================================================ */
-    int      (*odroid_overlay_draw_text)(uint16_t x, uint16_t y, uint16_t width,
-                                         const char *text, uint16_t color, uint16_t color_bg);
     int      (*odroid_sdcard_mkdir)(const char *path);
     int32_t  (*odroid_settings_app_int32_get)(const char *key, int32_t default_value);
     void     (*odroid_settings_app_int32_set)(const char *key, int32_t value);
@@ -424,7 +508,7 @@ typedef struct {
     uint8_t (*common_emu_sound_get_volume)(void);
     bool    (*common_emu_sound_loop_is_muted)(void);
     void    (*common_emu_sound_sync)(bool use_nops);
-    void    (*common_ingame_overlay)(void);
+    /* (common_ingame_overlay folded into overlay_ctl.) */
 
     /* ================================================================
      * Missing libc (discovered after v1 initial list)
@@ -473,8 +557,7 @@ typedef struct {
 
     /* (odroid_display_get_filter_mode folded into display_ctl.) */
 
-    size_t   (*odroid_overlay_cache_file_in_ram)(const char *file_path,
-                                                 uint8_t *dest_address);
+    /* (odroid_overlay_cache_file_in_ram folded into overlay_ctl.) */
 
     /* ================================================================
      * v1 append: surface required to port the Mega Drive / Genesis
@@ -603,20 +686,17 @@ typedef struct {
      * folded into lcd_copy_fb — see the LCD block above.)
      * ================================================================ */
     uint32_t (*get_SystemCoreClock)(void);
-    /* Plain cache_file_in_flash is bridge-composed as relocate(..., NULL). */
-    uint8_t *(*odroid_overlay_cache_file_in_flash_relocate)(
-        const char *file_path, uint32_t *file_size_p, bool byte_swap,
-        gw_flash_relocate_cb_t relocate_cb);
+    /* (odroid_overlay_cache_file_in_flash_relocate / draw_error_screen
+     * folded into overlay_ctl. Plain cache_file_in_flash is still
+     * bridge-composed as relocate(..., NULL).) */
     /* (lcd_backlight_set folded into lcd_ctl.) */
-    void     (*draw_error_screen)(const char *main_line, const char *line_1, const char *line_2);
 
     /* ================================================================
-     * v2 append: per-core option i18n. Returns the active UI language
-     * code ("en_us", "fr_fr", "zh_cn", ...). Cores look up their own
-     * string tables via gw_i18n() (core_common) with English fallback —
-     * curr_lang / lang_t stay firmware-private.
+     * v2 append: per-core option i18n. (i18n_lang_code folded into
+     * i18n_ctl.) Cores look up their own string tables via gw_i18n()
+     * (core_common) with English fallback — curr_lang / lang_t stay
+     * firmware-private.
      * ================================================================ */
-    const char *(*i18n_lang_code)(void);
 
     /* ================================================================
      * v2 append: live app descriptor (speedupEnabled, handlers, …).
@@ -631,6 +711,21 @@ typedef struct {
      * Append-only while ABI v2 is unpublished — no version bump.
      * ================================================================ */
     uint32_t (*dma2d_ctl)(gw_dma2d_op_t op, uint32_t a, uint32_t b, uint32_t c);
+
+    /* ================================================================
+     * v2 append: themed controllers (overlay / i18n / math) + Music.
+     * PCM ops live on audio_ctl; backlight level on lcd_ctl. Folded
+     * former standalone overlay/cache/error/ingame, i18n_lang_code,
+     * and pow into these ctls. Append-only; no version bump while ABI
+     * v2 is unpublished.
+     * ================================================================ */
+    uintptr_t (*overlay_ctl)(gw_overlay_op_t op, uintptr_t a, uintptr_t b,
+                             uintptr_t c, uintptr_t d);
+    uintptr_t (*i18n_ctl)(gw_i18n_op_t op, uintptr_t a, uintptr_t b,
+                          uintptr_t c, uintptr_t d);
+    uintptr_t (*math_ctl)(gw_math_op_t op, uintptr_t a, uintptr_t b);
+    /* &curr_colors (firmware gui.c). Bridge macros as colors_t *. */
+    void **curr_colors_ptr;
 
 } gw_firmware_abi_t;
 

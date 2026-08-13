@@ -1,7 +1,8 @@
 /*
  * Per-core option-string i18n for standalone cores.
  *
- * Firmware exposes the active language code via ABI (`i18n_lang_code`);
+ * Firmware exposes the active language code via ABI (`i18n_ctl` /
+ * `GW_I18N_LANG_CODE`);
  * each core keeps its own tiny translation tables and looks them up with
  * gw_i18n() — English is required, every other language is optional and
  * falls back to English automatically. Does not touch firmware lang_t.

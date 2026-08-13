@@ -63,6 +63,10 @@ extern "C" {
 #define dma_counter (*(gw_firmware_abi()->dma_counter_ptr))
 #define common_emu_sound_dma_marker (*(gw_firmware_abi()->common_emu_sound_dma_marker_ptr))
 
+/* curr_colors (gui.h): live launcher theme. Include gui.h before this
+ * header so colors_t is known; this macro then overrides the extern. */
+#define curr_colors (*(colors_t **)(gw_firmware_abi()->curr_colors_ptr))
+
 /* Defined by every core's own linker script (cores/_template/core_ram_emu.ld)
  * right after the loaded code+data and right after BSS, respectively.
  * tools/pack_core.py reads these two (via `nm`) to compute code_size/
